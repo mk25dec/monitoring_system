@@ -19,7 +19,9 @@ Python modules ──emit()──► Redis Stream (stage:events)
 ## Prerequisites
 
 - [Pixi](https://pixi.sh)
-- **Redis** running locally (e.g. `sudo apt install redis-server && sudo systemctl start redis-server`)
+- **Redis** running locally:
+  - `docker compose up -d` (uses `docker-compose.yml` in this repo), or
+  - `sudo apt install redis-server && sudo systemctl start redis-server`
 
 ## Quick start
 

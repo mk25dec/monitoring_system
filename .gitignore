@@ -14,7 +14,6 @@ build/
 # Local config & data
 .env
 config.toml
-!config.toml.example
 data/
 *.db
 *.db-journal
