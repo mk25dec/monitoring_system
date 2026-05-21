@@ -25,22 +25,45 @@ class StageClient:
             decode_responses=False,
         )
         self._stream = self._settings.redis.stream
+        self._seq_counters: dict[tuple[str, str], int] = {}
+
+    def next_sequence(self, run_id: str, job: str) -> int:
+        """Next step number for this run + job (1, 2, 3, …)."""
+        key = (run_id, job)
+        n = self._seq_counters.get(key, 0) + 1
+        self._seq_counters[key] = n
+        return n
+
+    def _resolve_sequence(self, run_id: str, job: str, sequence: int | None) -> int:
+        key = (run_id, job)
+        if sequence is not None:
+            self._seq_counters[key] = max(self._seq_counters.get(key, 0), sequence)
+            return sequence
+        return self.next_sequence(run_id, job)
 
     def emit(
         self,
         *,
         run_id: str,
-        module: str,
+        job: str,
         stage: str,
         status: str,
+        sequence: int | None = None,
+        message: str | None = None,
+        error: str | None = None,
         data: dict[str, Any] | None = None,
         event_id: str | None = None,
+        module: str | None = None,  # deprecated alias for job
     ) -> str:
+        seq = self._resolve_sequence(run_id, job, sequence)
         envelope = StageEnvelope(
             run_id=run_id,
-            module=module,
+            job=job or (module or ""),
             stage=stage,
             status=status,
+            sequence=seq,
+            message=message,
+            error=error,
             data=data or {},
         )
         if event_id:
@@ -61,13 +84,14 @@ class StageClient:
     def _spool(self, envelope: StageEnvelope) -> None:
         _SPOOL_DIR.mkdir(parents=True, exist_ok=True)
         path = _SPOOL_DIR / f"{envelope.event_id}.json"
+        body = envelope.model_dump(mode="json")
+        body["ts"] = envelope.ts_local_str
         path.write_text(
-            json.dumps(envelope.model_dump(mode="json"), separators=(",", ":")),
+            json.dumps(body, separators=(",", ":")),
             encoding="utf-8",
         )
 
     def flush_spool(self) -> int:
-        """Retry spooled events when Redis is back. Returns count flushed."""
         if not _SPOOL_DIR.is_dir():
             return 0
         count = 0
@@ -85,38 +109,50 @@ class StageClient:
     def track(
         self,
         run_id: str,
-        module: str,
+        job: str,
         stage: str,
         *,
+        sequence: int | None = None,
+        message: str | None = None,
         data: dict[str, Any] | None = None,
         ok_status: str = "done",
         fail_status: str = "failed",
+        module: str | None = None,
     ) -> Generator[dict[str, Any], None, None]:
-        """Context manager: running → done/failed."""
+        job_name = job or (module or "")
+        seq = self._resolve_sequence(run_id, job_name, sequence)
         extra = dict(data or {})
+        start_msg = message or f"Starting {stage}"
         self.emit(
             run_id=run_id,
-            module=module,
+            job=job_name,
             stage=stage,
             status="running",
+            sequence=seq,
+            message=start_msg,
             data=extra,
         )
         try:
             yield extra
             self.emit(
                 run_id=run_id,
-                module=module,
+                job=job_name,
                 stage=stage,
                 status=ok_status,
+                sequence=seq,
+                message=message or f"{stage} completed",
                 data=extra,
             )
         except Exception as exc:
-            extra["error"] = repr(exc)
+            err_text = str(exc) or repr(exc)
             self.emit(
                 run_id=run_id,
-                module=module,
+                job=job_name,
                 stage=stage,
                 status=fail_status,
+                sequence=seq,
+                message=message or f"{stage} failed",
+                error=err_text,
                 data=extra,
             )
             raise
@@ -135,25 +171,31 @@ def get_client() -> StageClient:
 def emit(
     *,
     run_id: str,
-    module: str,
+    job: str,
     stage: str,
     status: str,
+    sequence: int | None = None,
+    message: str | None = None,
+    error: str | None = None,
     data: dict[str, Any] | None = None,
+    module: str | None = None,
 ) -> str:
-    """Module-level shortcut: ``from monitoring_system import emit``."""
     return get_client().emit(
         run_id=run_id,
-        module=module,
+        job=job,
         stage=stage,
         status=status,
+        sequence=sequence,
+        message=message,
+        error=error,
         data=data,
+        module=module,
     )
 
 
-def track(
-    run_id: str,
-    module: str,
-    stage: str,
-    **kwargs: Any,
-):
-    return get_client().track(run_id=run_id, module=module, stage=stage, **kwargs)
+def track(run_id: str, job: str, stage: str, **kwargs: Any):
+    return get_client().track(run_id=run_id, job=job, stage=stage, **kwargs)
+
+
+def next_sequence(run_id: str, job: str) -> int:
+    return get_client().next_sequence(run_id, job)

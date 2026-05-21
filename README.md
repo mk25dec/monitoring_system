@@ -1,155 +1,210 @@
-# monitoring_system
+# Stage Monitor
 
-Local, free stage monitoring for Python data jobs: **your code → Redis Stream → ingest → SQLite → Streamlit**.
+This tool shows what your Python programs are doing — which step is running, which finished, which failed — in a web page with green / amber / red lights.
 
-Producers only send a small stable envelope; extra fields go in `data` (JSON) without changing Redis, ingest, or the dashboard contract.
+You do **not** change your programs every time. You start the monitor once, then run your jobs as usual.
 
-## Architecture
+---
 
-```
-Python modules ──emit()──► Redis Stream (stage:events)
-                              │
-                         ingest worker (ACK after SQLite commit)
-                              ▼
-                         SQLite (events + current_state)
-                              ▼
-                         Streamlit (ui_dashboard view, colors)
-```
+## What you need on your computer first
 
-## Prerequisites
+1. **Pixi** — installs the monitor software.  
+   Install from: https://pixi.sh  
 
-- [Pixi](https://pixi.sh)
-- **Redis** running locally:
-  - `docker compose up -d` (uses `docker-compose.yml` in this repo), or
-  - `sudo apt install redis-server && sudo systemctl start redis-server`
+2. **Redis** — a small background service that receives updates.  
+   Easiest way (if you have Docker): open a terminal in this folder and run:
+   ```bash
+   docker compose up -d
+   ```
+   Leave that running (or run it once before each session).
 
-## Quick start
+3. **This folder** — open a terminal here:
+   ```bash
+   cd /home/irene/Documents/GitHub/monitoring_system
+   ```
+
+4. **One-time setup** (only the first time):
+   ```bash
+   pixi install
+   pixi run init-db
+   ```
+
+5. **Quick test** (Redis must be running):
+   ```bash
+   pixi run test-e2e
+   ```
+   You should see `All checks passed.`
+
+---
+
+## If something does not work
+
+| Problem | Fix |
+|---------|-----|
+| `Connection refused` on Redis | Start Redis: `docker compose up -d` or `sudo systemctl start redis-server` |
+| Empty dashboard | Terminal 1 must run `pixi run ingest`. Then run a sample job. |
+| `no such column: job` | Run `pixi run init-db` once (fixes old databases). |
+| KPI cards white / filter dead | Hard-refresh browser (`Ctrl+Shift+R`) after `pixi run dashboard` |
+
+---
+
+## Easy way — one command (recommended)
 
 ```bash
 cd /home/irene/Documents/GitHub/monitoring_system
+pixi run monitor-start    # starts Redis + ingest + dashboard
+```
 
-# Install env + package
-pixi install
+Open http://localhost:8501 in your browser.
 
-# Optional: copy config / env
-cp .env.example .env          # optional overrides
-# cp config.default.toml config.toml  # optional
+```bash
+pixi run monitor-stop     # stops dashboard + ingest (+ Docker Redis if this script started it)
+pixi run monitor-status   # check what is running
+```
 
-# Terminal 1 — persist events
+Or use the script directly: `./scripts/monitor.sh start|stop|status|restart`
+
+---
+
+## Manual way (3 terminals)
+
+You need **3 separate terminal windows**. Think of them as three programs that must stay open.
+
+### Terminal 1 — “Save updates”
+
+Copy and paste, press Enter:
+
+```bash
+cd /home/irene/Documents/GitHub/monitoring_system
 pixi run ingest
+```
 
-# Terminal 2 — dashboard
+Leave this window open. You should see it waiting (no error about Redis).
+
+---
+
+### Terminal 2 — “Show the web page”
+
+Open a **new** terminal. Copy and paste:
+
+```bash
+cd /home/irene/Documents/GitHub/monitoring_system
 pixi run dashboard
-
-# Terminal 3 — example producer
-pixi run example
 ```
 
-Open the Streamlit URL (usually http://localhost:8501). You should see `demo-run-001` with colored rows.
+Leave this open. Your browser should open **http://localhost:8501**  
+If it does not, copy that address into Chrome or Firefox.
 
-## Configuration
+This is your **dashboard** — the table with lights and progress bars.
 
-| Source | Purpose |
-|--------|---------|
-| `config.default.toml` | Committed defaults |
-| `config.toml` | Local overrides (gitignored) |
-| `.env` | Env overrides, e.g. `MONITORING_REDIS__HOST=127.0.0.1` |
-| `MONITORING_CONFIG` | Point to a custom TOML file |
+---
 
-Key settings: `redis.stream`, `sqlite.path`, `ingest.batch_size`, `dashboard.poll_seconds`.
+### Terminal 3 — “Run a test job” (optional, to try it)
 
-## Connect any Python module
-
-### Option A — install this repo editable (recommended)
-
-From your other project (same machine):
+Open a **third** terminal. Pick **one** line to paste (or run all three, one after another):
 
 ```bash
-pip install -e /home/irene/Documents/GitHub/monitoring_system
-# or add to your pixi/pyproject:
-# monitoring-system = { path = "../monitoring_system", editable = true }
+cd /home/irene/Documents/GitHub/monitoring_system
+pixi run sample-etl
 ```
 
-In your pipeline code:
-
-```python
-from monitoring_system import emit, track
-
-RUN_ID = "batch-2025-05-21"
-
-emit(run_id=RUN_ID, module="myproject.etl.load", stage="extract", status="running")
-# ... work ...
-emit(run_id=RUN_ID, module="myproject.etl.load", stage="extract", status="done", data={"rows": 5000})
-
-# Or context manager (running → done/failed):
-with track(RUN_ID, "myproject.etl.transform", "normalize", data={"source": "s3"}):
-    ...
-```
-
-Add arbitrary fields in `data` — they are stored in SQLite `payload` and shown in the dashboard expander:
-
-```python
-emit(..., status="running", data={"shard": 3, "memory_mb": 512, "custom_metric": 0.99})
-```
-
-### Option B — minimal copy-paste
-
-If you cannot install the package, publish one line to Redis with the same JSON envelope (`schema_version`, `event_id`, `ts`, `run_id`, `module`, `stage`, `status`, `data`). See `src/monitoring_system/envelope.py`.
-
-### Module naming
-
-Use dotted names matching your code: `package.submodule.stage_name` so the table stays readable across many jobs.
-
-### Offline / Redis down
-
-`emit()` writes JSON files under `data/spool/`. Call `get_client().flush_spool()` when Redis is back.
-
-## Running services (Pixi tasks)
-
-| Task | Command |
-|------|---------|
-| Ingest worker | `pixi run ingest` |
-| Dashboard | `pixi run dashboard` |
-| Init SQLite schema | `pixi run init-db` |
-| Example producer | `pixi run example` |
-| Tests | `pixi run -e dev test` |
-
-## Project layout
-
-```
-monitoring_system/
-├── config.default.toml
-├── .env.example
-├── pixi.toml
-├── pyproject.toml
-├── src/monitoring_system/
-│   ├── client.py          # Producer SDK
-│   ├── envelope.py        # Event contract
-│   ├── config.py
-│   ├── db/                # SQLite schema + writes
-│   ├── ingest/worker.py   # Redis → SQLite
-│   └── dashboard/app.py   # Streamlit UI
-└── examples/quick_emit.py
-```
-
-## Status colors (dashboard)
-
-| Status | Color |
-|--------|-------|
-| `running` | Yellow |
-| `done`, `completed`, `success` | Green |
-| `failed`, `error` | Red |
-| `pending` | Gray |
-| Other | White |
-
-## Git
+Or:
 
 ```bash
-git init
-git add .
-git commit -m "Initial monitoring_system scaffold"
+pixi run sample-training
 ```
 
-## License
+Or:
 
-Use freely in your own projects.
+```bash
+pixi run sample-export
+```
+
+Watch **Terminal 2’s browser page** — rows should appear and lights should change.
+
+You can run more test jobs anytime while Terminals 1 and 2 stay open.
+
+---
+
+## Quick checklist
+
+| Step | Terminal | Command | Keep open? |
+|------|----------|---------|------------|
+| A | Any | `docker compose up -d` | Redis can stay running in background |
+| B | 1 | `pixi run ingest` | Yes |
+| C | 2 | `pixi run dashboard` | Yes — use the browser page |
+| D | 3+ | `pixi run sample-etl` (etc.) | No — runs and finishes |
+
+**Order:** A once → B → C → then D whenever you want.
+
+---
+
+## When something goes wrong
+
+| Problem | What to try |
+|---------|-------------|
+| Redis error | Run `docker compose up -d` in this folder |
+| Empty dashboard | Make sure Terminal 1 (`ingest`) is running, then run a sample job again |
+| Page won’t open | Go to http://localhost:8501 manually |
+| “pixi not found” | Install Pixi from https://pixi.sh and open a **new** terminal |
+
+---
+
+## Using your own Python programs later
+
+Your programmer (or you, with a little help) adds two lines to your script:
+
+```python
+from monitoring_system import emit
+
+# sequence = step order in the job (1, 2, 3…). Same stage name twice → use a new sequence each time.
+emit(
+    run_id="job-1",
+    job="myprogram",
+    stage="step1",
+    status="running",
+    sequence=1,
+    message="Reading input files",
+)
+# ... do work ...
+emit(
+    run_id="job-1",
+    job="myprogram",
+    stage="step1",
+    status="done",
+    sequence=1,
+    message="Step 1 finished",
+)
+
+# On failure or crash:
+emit(
+    run_id="job-1",
+    job="myprogram",
+    stage="step2",
+    status="failed",
+    sequence=2,
+    message="Export failed",
+    error="disk full",
+)
+```
+
+Omit `sequence` and the client assigns the next number automatically (1, 2, 3…) for that run + job.
+The dashboard sorts by **Seq** so users see step order. **Message** and **Error** columns show both fields.
+
+The monitor must still be running (Terminal 1 + 2) when your program runs.
+
+---
+
+## All commands in one place
+
+Run these from: `/home/irene/Documents/GitHub/monitoring_system`
+
+| What you want | Paste this |
+|---------------|------------|
+| First-time setup | `pixi install` |
+| Start Redis (Docker) | `docker compose up -d` |
+| Save updates (Terminal 1) | `pixi run ingest` |
+| Open dashboard (Terminal 2) | `pixi run dashboard` |
+| Test job — ETL | `pixi run sample-etl` |
+| Test job — training | `pixi run sample-training` |
+| Test job — export (has a failure) | `pixi run sample-export` |

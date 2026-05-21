@@ -16,6 +16,15 @@ ingest = "stage-ingest"
 dashboard = "streamlit run src/monitoring_system/dashboard/app.py"
 init-db = "python -c \"from monitoring_system.db import init_db; from monitoring_system.config import load_settings; init_db(load_settings().sqlite.resolved_path())\""
 example = "python examples/quick_emit.py"
+sample-etl = "python examples/sample_etl.py"
+sample-training = "python examples/sample_training.py"
+sample-export = "python examples/sample_export.py --fail"
+sample-retry = "python examples/sample_retry.py"
+test-e2e = "python scripts/e2e_test.py"
+monitor-start = { cmd = "bash scripts/monitor.sh start", cwd = "." }
+monitor-stop = { cmd = "bash scripts/monitor.sh stop", cwd = "." }
+monitor-status = { cmd = "bash scripts/monitor.sh status", cwd = "." }
+monitor-restart = { cmd = "bash scripts/monitor.sh restart", cwd = "." }
 
 [environments]
 default = { features = [], solve-group = "default" }

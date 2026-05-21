@@ -1,6 +1,9 @@
 # Pixi
 .pixi/
 
+# Runtime (monitor.sh)
+.run/
+
 # Python
 __pycache__/
 *.py[cod]
