@@ -1,0 +1,28 @@
+[workspace]
+name = "monitoring-system"
+version = "0.1.0"
+description = "Local stage monitoring: Redis Streams → SQLite → Streamlit"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+
+[dependencies]
+python = ">=3.11,<3.13"
+
+[pypi-dependencies]
+monitoring-system = { path = ".", editable = true }
+
+[tasks]
+ingest = "stage-ingest"
+dashboard = "streamlit run src/monitoring_system/dashboard/app.py"
+init-db = "python -c \"from monitoring_system.db import init_db; from monitoring_system.config import load_settings; init_db(load_settings().sqlite.resolved_path())\""
+example = "python examples/quick_emit.py"
+
+[environments]
+default = { features = [], solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
+
+[feature.dev.dependencies]
+pytest = ">=8.0"
+
+[feature.dev.tasks]
+test = "pytest -q"

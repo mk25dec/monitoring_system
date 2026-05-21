@@ -1,0 +1,21 @@
+# Copy to config.toml and edit, or override via .env (see .env.example).
+
+[redis]
+host = "127.0.0.1"
+port = 6379
+db = 0
+stream = "stage:events"
+consumer_group = "stage_ingest"
+consumer_name = "worker-1"
+
+[sqlite]
+path = "data/stages.db"
+
+[ingest]
+batch_size = 100
+block_ms = 1000
+claim_idle_ms = 60000
+
+[dashboard]
+poll_seconds = 2
+page_title = "Stage Monitor"

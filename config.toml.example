@@ -1,0 +1,8 @@
+# Copy to config.toml for local overrides (gitignored).
+
+# [redis]
+# host = "127.0.0.1"
+# port = 6379
+
+# [sqlite]
+# path = "data/stages.db"
