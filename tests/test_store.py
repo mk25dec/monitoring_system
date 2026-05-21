@@ -2,7 +2,13 @@ from pathlib import Path
 
 import sqlite3
 
-from monitoring_system.db.store import backfill_timing, init_db, persist_event
+from monitoring_system.db.store import (
+    backfill_timing,
+    clear_database,
+    delete_run,
+    init_db,
+    persist_event,
+)
 from monitoring_system.envelope import StageEnvelope
 
 
@@ -142,3 +148,35 @@ def test_job_summary_row(tmp_path: Path) -> None:
     assert payload["progress_pct"] == 87
     assert payload["row_kind"] == "job"
     assert payload["error"] == "checksum mismatch"
+
+
+def test_delete_run(tmp_path: Path) -> None:
+    db = tmp_path / "del.db"
+    init_db(db)
+    persist_event(
+        db,
+        StageEnvelope(run_id="keep-me", job="j", stage="s", status="done", sequence=1),
+    )
+    persist_event(
+        db,
+        StageEnvelope(run_id="remove-me", job="j", stage="s", status="done", sequence=1),
+    )
+    counts = delete_run(db, "remove-me")
+    assert counts["current_state"] >= 1
+    with sqlite3.connect(db) as conn:
+        left = conn.execute("SELECT DISTINCT run_id FROM current_state").fetchall()
+    assert left == [("keep-me",)]
+
+
+def test_clear_database(tmp_path: Path) -> None:
+    db = tmp_path / "clear.db"
+    init_db(db)
+    persist_event(
+        db,
+        StageEnvelope(run_id="r1", job="j", stage="s", status="done", sequence=1),
+    )
+    counts = clear_database(db)
+    assert counts["current_state"] >= 1
+    with sqlite3.connect(db) as conn:
+        n = conn.execute("SELECT COUNT(*) FROM current_state").fetchone()[0]
+    assert n == 0

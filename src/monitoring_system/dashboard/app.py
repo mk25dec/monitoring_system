@@ -14,7 +14,7 @@ import streamlit as st
 from monitoring_system.config import load_settings
 from monitoring_system.dashboard.table_render import JOB_TABLE_CSS, render_grouped_table
 from monitoring_system.dashboard.theme import LED_ONLY, THEME_CSS, kpi_button_css
-from monitoring_system.db import init_db
+from monitoring_system.db import clear_database, delete_run, init_db
 from monitoring_system.db.job_summary import JOB_SEQUENCE
 from monitoring_system.timefmt import format_duration, format_ts
 
@@ -291,6 +291,63 @@ def _sort_job_blocks(blocks: list[dict[str, Any]], sort_key: str) -> list[dict[s
     return blocks
 
 
+def _data_sidebar(db_path, df: pd.DataFrame) -> None:
+    st.sidebar.markdown("### Data")
+    run_ids = (
+        sorted(df.loc[df["row_kind"] == "job", "run_id"].astype(str).unique().tolist())
+        if not df.empty
+        else []
+    )
+
+    if run_ids:
+        pick = st.sidebar.selectbox(
+            "Run to delete",
+            options=run_ids,
+            key="delete_run_pick",
+        )
+        if st.sidebar.button("Delete this run", key="delete_run_btn", type="secondary"):
+            st.session_state.confirm_delete_run = pick
+    else:
+        st.sidebar.caption("No runs to delete.")
+
+    pending_run = st.session_state.get("confirm_delete_run")
+    if pending_run:
+        st.sidebar.warning(f"Delete all data for **{pending_run}**?")
+        y, n = st.sidebar.columns(2)
+        if y.button("Yes, delete run", key="confirm_delete_run_yes", type="primary"):
+            counts = delete_run(db_path, pending_run)
+            st.session_state.pop("confirm_delete_run", None)
+            st.session_state.refreshed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.sidebar.success(
+                f"Removed run `{pending_run}` "
+                f"({counts['current_state']} snapshot rows, {counts['events']} events)."
+            )
+            st.rerun()
+        if n.button("Cancel", key="confirm_delete_run_no"):
+            st.session_state.pop("confirm_delete_run", None)
+            st.rerun()
+
+    st.sidebar.divider()
+    if st.sidebar.button("Clear entire database", key="clear_all_btn", type="secondary"):
+        st.session_state.confirm_clear_all = True
+
+    if st.session_state.get("confirm_clear_all"):
+        st.sidebar.error("Delete **all** runs and history?")
+        y, n = st.sidebar.columns(2)
+        if y.button("Yes, clear all", key="confirm_clear_all_yes", type="primary"):
+            counts = clear_database(db_path)
+            st.session_state.pop("confirm_clear_all", None)
+            st.session_state.kpi_filter = None
+            st.session_state.refreshed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.sidebar.success(
+                f"Cleared database ({counts['current_state']} snapshots, {counts['events']} events)."
+            )
+            st.rerun()
+        if n.button("Cancel", key="confirm_clear_all_no"):
+            st.session_state.pop("confirm_clear_all", None)
+            st.rerun()
+
+
 def _stage_table(df: pd.DataFrame, refreshed: str) -> None:
     st.markdown('<div class="table-zone">', unsafe_allow_html=True)
     job_rows = df[df["row_kind"] == "job"] if not df.empty else df
@@ -386,7 +443,9 @@ def main() -> None:
     if auto:
         st.sidebar.caption(f"Every {int(settings.dashboard.poll_seconds)}s")
 
-    base = _apply_sidebar_filters(_enrich(_load_rows(db_path)))
+    raw = _enrich(_load_rows(db_path))
+    _data_sidebar(db_path, raw)
+    base = _apply_sidebar_filters(raw)
 
     st.markdown(
         f"""

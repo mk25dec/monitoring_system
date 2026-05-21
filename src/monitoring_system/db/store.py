@@ -372,3 +372,21 @@ def persist_event(db_path: Path, envelope: StageEnvelope) -> bool:
         upsert_job_summary(conn, envelope.run_id, envelope.job)
         conn.commit()
     return True
+
+
+def delete_run(db_path: Path, run_id: str) -> dict[str, int]:
+    """Remove all events and current_state rows for one run_id."""
+    with sqlite3.connect(db_path) as conn:
+        events = conn.execute("DELETE FROM events WHERE run_id = ?", (run_id,)).rowcount
+        state = conn.execute("DELETE FROM current_state WHERE run_id = ?", (run_id,)).rowcount
+        conn.commit()
+    return {"events": events, "current_state": state}
+
+
+def clear_database(db_path: Path) -> dict[str, int]:
+    """Remove all rows from events and current_state."""
+    with sqlite3.connect(db_path) as conn:
+        events = conn.execute("DELETE FROM events").rowcount
+        state = conn.execute("DELETE FROM current_state").rowcount
+        conn.commit()
+    return {"events": events, "current_state": state}
