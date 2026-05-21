@@ -21,6 +21,8 @@ sample-training = "python examples/sample_training.py"
 sample-export = "python examples/sample_export.py --fail"
 sample-retry = "python examples/sample_retry.py"
 test-e2e = "python scripts/e2e_test.py"
+start = { cmd = "bash scripts/monitor.sh start", cwd = "." }
+stop = { cmd = "bash scripts/monitor.sh stop", cwd = "." }
 monitor-start = { cmd = "bash scripts/monitor.sh start", cwd = "." }
 monitor-stop = { cmd = "bash scripts/monitor.sh stop", cwd = "." }
 monitor-status = { cmd = "bash scripts/monitor.sh status", cwd = "." }

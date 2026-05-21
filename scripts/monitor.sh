@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Start / stop / status for the full monitoring stack (Redis + ingest + dashboard).
+# Start / stop the full Stage Monitor (Docker Redis + ingest + dashboard).
 #
 # Usage:
-#   ./scripts/monitor.sh start
-#   ./scripts/monitor.sh stop
+#   ./scripts/monitor.sh start    # first time: installs deps, starts Docker Redis, opens stack
+#   ./scripts/monitor.sh stop     # stops dashboard, ingest, and Docker Redis (if we started it)
 #   ./scripts/monitor.sh status
 #   ./scripts/monitor.sh restart
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILE="${ROOT}/docker-compose.yml"
 RUN_DIR="${ROOT}/.run"
 INGEST_PID="${RUN_DIR}/ingest.pid"
 DASH_PID="${RUN_DIR}/dashboard.pid"
@@ -23,8 +24,36 @@ mkdir -p "${RUN_DIR}"
 
 need_pixi() {
   if ! command -v pixi >/dev/null 2>&1; then
-    echo "ERROR: pixi not found. Install from https://pixi.sh"
+    echo ""
+    echo "ERROR: Pixi is not installed."
+    echo "  Install from https://pixi.sh then open a new terminal and run: ./start"
+    echo ""
     exit 1
+  fi
+}
+
+need_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo ""
+    echo "ERROR: Docker is not installed."
+    echo "  Install Docker Desktop (or Docker Engine), start it, then run: ./start"
+    echo ""
+    exit 1
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo ""
+    echo "ERROR: Docker is installed but not running."
+    echo "  Open Docker Desktop and wait until it is ready, then run: ./start"
+    echo ""
+    exit 1
+  fi
+}
+
+ensure_pixi_env() {
+  if [[ ! -d "${ROOT}/.pixi/envs/default" ]]; then
+    echo "[setup] First time — installing software (may take a few minutes)..."
+    pixi install
+    echo "[setup] Done."
   fi
 }
 
@@ -36,60 +65,51 @@ redis_ping() {
   fi
 }
 
-docker_ok() {
-  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+compose_running() {
+  docker compose -f "${COMPOSE_FILE}" ps --status running 2>/dev/null | grep -q redis
 }
 
 start_redis() {
-  if redis_ping; then
-    if docker_ok && docker compose -f "${ROOT}/docker-compose.yml" ps redis 2>/dev/null | grep -q running; then
-      echo "redis" > "${REDIS_MODE}"
-      echo "[redis] Already running (Docker)."
-    else
-      echo "system" > "${REDIS_MODE}"
-      echo "[redis] Already running (system)."
-    fi
-    return 0
-  fi
+  need_docker
 
-  if docker_ok; then
-    echo "[redis] Starting via Docker..."
-    docker compose -f "${ROOT}/docker-compose.yml" up -d redis
+  if redis_ping && compose_running; then
     echo "docker" > "${REDIS_MODE}"
-    for _ in $(seq 1 20); do
-      if redis_ping; then
-        echo "[redis] Ready."
-        return 0
-      fi
-      sleep 0.5
-    done
-    echo "ERROR: Redis Docker container did not respond."
-    exit 1
-  fi
-
-  if command -v systemctl >/dev/null 2>&1; then
-    echo "[redis] Trying systemctl start redis-server..."
-    sudo systemctl start redis-server 2>/dev/null || systemctl start redis 2>/dev/null || true
-  fi
-
-  if redis_ping; then
-    echo "system" > "${REDIS_MODE}"
-    echo "[redis] Ready (system)."
+    echo "[redis] Already running (Docker)."
     return 0
   fi
 
-  echo "ERROR: Redis is not running. Install Redis or start Docker, then retry."
+  if redis_ping && ! compose_running; then
+    echo "external" > "${REDIS_MODE}"
+    echo "[redis] Already running (not started by this script — left as-is on stop)."
+    return 0
+  fi
+
+  echo "[redis] Starting database (Docker)..."
+  docker compose -f "${COMPOSE_FILE}" up -d
+  echo "docker" > "${REDIS_MODE}"
+
+  for _ in $(seq 1 30); do
+    if redis_ping; then
+      echo "[redis] Ready."
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  echo "ERROR: Redis did not start. Is Docker running? Try: docker compose -f docker-compose.yml logs"
   exit 1
 }
 
 stop_redis() {
   local mode=""
   [[ -f "${REDIS_MODE}" ]] && mode="$(cat "${REDIS_MODE}")"
-  if [[ "${mode}" == "docker" ]] && docker_ok; then
-    echo "[redis] Stopping Docker Redis..."
-    docker compose -f "${ROOT}/docker-compose.yml" stop redis 2>/dev/null || true
+  if [[ "${mode}" == "docker" ]]; then
+    echo "[redis] Stopping database (Docker)..."
+    docker compose -f "${COMPOSE_FILE}" down
+  elif [[ "${mode}" == "external" ]]; then
+    echo "[redis] Left running (was already up before start)."
   else
-    echo "[redis] Left running (system Redis was used or unknown)."
+    echo "[redis] Nothing to stop."
   fi
   rm -f "${REDIS_MODE}"
 }
@@ -108,7 +128,7 @@ stop_pid() {
   if is_running "${pid_file}"; then
     local pid
     pid="$(cat "${pid_file}")"
-    echo "[${name}] Stopping PID ${pid}..."
+    echo "[${name}] Stopping..."
     kill "${pid}" 2>/dev/null || true
     for _ in $(seq 1 10); do
       kill -0 "${pid}" 2>/dev/null || break
@@ -123,7 +143,7 @@ stop_pid() {
 
 start_ingest() {
   if is_running "${INGEST_PID}"; then
-    echo "[ingest] Already running (PID $(cat "${INGEST_PID}"))."
+    echo "[ingest] Already running."
     return 0
   fi
   echo "[ingest] Starting..."
@@ -131,18 +151,17 @@ start_ingest() {
   echo $! > "${INGEST_PID}"
   sleep 1
   if is_running "${INGEST_PID}"; then
-    echo "[ingest] Running (PID $(cat "${INGEST_PID}")). Log: ${INGEST_LOG}"
+    echo "[ingest] Running."
   else
-    echo "ERROR: Ingest failed to start. See ${INGEST_LOG}"
-    tail -20 "${INGEST_LOG}" 2>/dev/null || true
+    echo "ERROR: Ingest failed. See ${INGEST_LOG}"
+    tail -15 "${INGEST_LOG}" 2>/dev/null || true
     exit 1
   fi
 }
 
 start_dashboard() {
   if is_running "${DASH_PID}"; then
-    echo "[dashboard] Already running (PID $(cat "${DASH_PID}"))."
-    echo "[dashboard] Open ${DASH_URL}"
+    echo "[dashboard] Already running → ${DASH_URL}"
     return 0
   fi
   echo "[dashboard] Starting..."
@@ -150,28 +169,29 @@ start_dashboard() {
   echo $! > "${DASH_PID}"
   sleep 2
   if is_running "${DASH_PID}"; then
-    echo "[dashboard] Running (PID $(cat "${DASH_PID}")). Log: ${DASH_LOG}"
-    echo "[dashboard] Open ${DASH_URL}"
+    echo "[dashboard] Running → ${DASH_URL}"
   else
-    echo "ERROR: Dashboard failed to start. See ${DASH_LOG}"
-    tail -20 "${DASH_LOG}" 2>/dev/null || true
+    echo "ERROR: Dashboard failed. See ${DASH_LOG}"
+    tail -15 "${DASH_LOG}" 2>/dev/null || true
     exit 1
   fi
 }
 
 cmd_start() {
   need_pixi
+  ensure_pixi_env
   echo "=== Starting Stage Monitor ==="
   start_redis
-  echo "[db] Initializing schema..."
+  echo "[db] Preparing local database..."
   pixi run init-db
   start_ingest
   start_dashboard
   echo ""
-  echo "=== Started ==="
-  echo "  Dashboard: ${DASH_URL}"
-  echo "  Stop all:  ./scripts/monitor.sh stop"
-  echo "  Status:    ./scripts/monitor.sh status"
+  echo "=== Ready ==="
+  echo "  Open in your browser: ${DASH_URL}"
+  echo "  Try a demo job:        pixi run sample-etl"
+  echo "  Stop everything:       ./stop"
+  echo ""
 }
 
 cmd_stop() {
@@ -179,28 +199,30 @@ cmd_stop() {
   stop_pid "dashboard" "${DASH_PID}"
   stop_pid "ingest" "${INGEST_PID}"
   stop_redis
-  # Fallback: stray processes from this project
   pkill -f "stage-ingest" 2>/dev/null || true
   pkill -f "streamlit run src/monitoring_system/dashboard/app.py" 2>/dev/null || true
+  echo ""
   echo "=== Stopped ==="
+  echo "  Start again anytime: ./start"
+  echo ""
 }
 
 cmd_status() {
-  echo "=== Stage Monitor status ==="
+  echo "=== Stage Monitor ==="
   if redis_ping; then
-    echo "[redis]     running"
+    echo "  Redis:     running"
   else
-    echo "[redis]     stopped"
+    echo "  Redis:     stopped"
   fi
   if is_running "${INGEST_PID}"; then
-    echo "[ingest]    running (PID $(cat "${INGEST_PID}"))"
+    echo "  Ingest:    running"
   else
-    echo "[ingest]    stopped"
+    echo "  Ingest:    stopped"
   fi
   if is_running "${DASH_PID}"; then
-    echo "[dashboard] running (PID $(cat "${DASH_PID}")) → ${DASH_URL}"
+    echo "  Dashboard: running → ${DASH_URL}"
   else
-    echo "[dashboard] stopped"
+    echo "  Dashboard: stopped"
   fi
 }
 
